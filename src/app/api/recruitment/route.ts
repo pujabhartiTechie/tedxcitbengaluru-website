@@ -1,484 +1,165 @@
-import { google } from 'googleapis';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from "next/server";
+import {
+  BASIC_COLUMNS,
+  EMPTY_BASIC,
+  getTeam,
+  hasErrors,
+  normalizePhone,
+  validateAnswers,
+  validateBasic,
+  type BasicDetails,
+} from "@/app/joinus/config";
 
-// Initialize Google Sheets API
-const auth = new google.auth.GoogleAuth({
-  credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-  },
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
+/**
+ * Receives a finished application from the form, checks it again on the
+ * server, and passes it to the Google Apps Script that writes to the sheet.
+ *
+ * The form already checks everything in the browser, but a browser check can
+ * be skipped by anyone who sends a request by hand. This check cannot.
+ *
+ * Two settings are read from the environment (.env.local on your laptop,
+ * "Environment Variables" on Vercel):
+ *   APPS_SCRIPT_URL     the web app link Apps Script gives you after deploying
+ *   APPS_SCRIPT_SECRET  the same password you saved inside the Apps Script
+ */
 
-const sheets = google.sheets({ version: 'v4', auth });
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
+const APPS_SCRIPT_SECRET = process.env.APPS_SCRIPT_SECRET;
 
-const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
+/** Sheets treats text starting with = + - @ as a formula. A leading ' stops that. */
+function safeCell(value: string): string {
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
 
-// Map team slugs to sheet names
-const SHEET_NAMES: Record<string, string> = {
-  'technical': 'Technical',
-  'event-management': 'Event Management',
-  'sponsorship': 'Sponsorship',
-  'curation': 'Curation',
-  'design': 'Design',
-  'media': 'Media',
-};
-
-// Define headers for each team's sheet
-const TEAM_HEADERS: Record<string, string[]> = {
-  'technical': [
-    'Timestamp',
-    'Name',
-    'USN',
-    'College Email',
-    'Personal Email',
-    'Phone',
-    'Department',
-    'Semester',
-    'otherClubs',
-    'Team',
-    'Project Description',
-    'Crazy Feature',
-    'Incident Response',
-    'Portfolio Link',
-    'Tools & Next Learning',
-    'One Word',
-    'Proof Link',
-    'Goals',
-    'otherTeams',
-  ],
-  'event-management': [
-    'Timestamp',
-    'Name',
-    'USN',
-    'College Email',
-    'Personal Email',
-    'Phone',
-    'Department',
-    'Semester',
-    'otherClubs',
-    'Team',
-    'Why Event Management',
-    'TEDx Meaning',
-    'What Excites You',
-    'Handle Pressure',
-    'Teamwork Example',
-    'Prior Experience',
-    'Preferred Tasks',
-    'Management Strategies',
-    'Tackle Non-Working Members',
-    'Portfolio Link',
-    'Campaign Idea',
-    'otherTeams',
-  ],
-  'sponsorship': [
-    'Timestamp',
-    'Name',
-    'USN',
-    'College Email',
-    'Personal Email',
-    'Phone',
-    'Department',
-    'Semester',
-    'otherClubs',
-    'Team',
-    'Outreach Strategy',
-    'Pitch Script',
-    'Channels Used',
-    'Business Selection',
-    'Relationship Building',
-    'Proposal Contents',
-    'Handle Objections',
-    'Availability Plan',
-    'otherTeams',
-  ],
-  'curation': [
-    'Timestamp',
-    'Name',
-    'USN',
-    'College Email',
-    'Personal Email',
-    'Phone',
-    'Department',
-    'Semester',
-    'otherClubs',
-    'Team',
-    'Writing Proficiency',
-    'Captions',
-    'Theme Ideas',
-    'What Resonates',
-    'Philosophical Thought',
-    'Why Curation',
-    'AI vs Curators',
-    'Content Enhancement',
-    'Image Description',
-    'otherTeams',
-  ],
-  'design': [
-    'Timestamp',
-    'Name',
-    'USN',
-    'College Email',
-    'Personal Email',
-    'Phone',
-    'Department',
-    'Semester',
-    'otherClubs',
-    'Team',
-    'Software Proficiency',
-    'Learning New Tools',
-    'Engagement Strategies',
-    'Proud Project',
-    'Design Trends',
-    'Inspiration Sources',
-    'Team Communication',
-    'Past Work Links',
-    'otherTeams',
-  ],
-  'media': [
-    'Timestamp',
-    'Name',
-    'USN',
-    'College Email',
-    'Personal Email',
-    'Phone',
-    'Department',
-    'Semester',
-    'otherClubs',
-    'Team',
-    'Software Proficiency',
-    'Proud Project',
-    'Inspiration',
-    'New Tools Comfort',
-    'Engagement Strategy',
-    'Past Work Links',
-    'otherTeams',
-  ],
-};
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
 
 export async function POST(request: NextRequest) {
+  let body: Record<string, unknown>;
   try {
-    const data = await request.json();
-    const {
-      basicDetails,
-      technicalDetails,
-      eventManagementDetails,
-      sponsorshipDetails,
-      curationDetails,
-      designDetails,
-      mediaDetails,
-    } = data;
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "The request was not valid." }, { status: 400 });
+  }
+  if (!body || typeof body !== "object") {
+    return NextResponse.json({ error: "The request was not valid." }, { status: 400 });
+  }
 
-    if (!basicDetails || !basicDetails.team) {
-      return NextResponse.json(
-        { error: 'Basic details and team selection are required' },
-        { status: 400 }
-      );
-    }
+  // Hidden field that real people never see or fill. Bots fill everything.
+  if (asText(body.website)) {
+    return NextResponse.json({ success: true });
+  }
 
-    if (!SPREADSHEET_ID) {
-      return NextResponse.json(
-        { error: 'Spreadsheet ID not configured' },
-        { status: 500 }
-      );
-    }
-
-    // Determine team slug from team name
-    const teamSlugMap: Record<string, string> = {
-      'Technical': 'technical',
-      'Event Management': 'event-management',
-      'Sponsorship': 'sponsorship',
-      'Curation': 'curation',
-      'Design': 'design',
-      'Media': 'media',
-    };
-
-    const teamSlug = teamSlugMap[basicDetails.team];
-    if (!teamSlug) {
-      return NextResponse.json(
-        { error: 'Invalid team selected' },
-        { status: 400 }
-      );
-    }
-
-    const sheetName = SHEET_NAMES[teamSlug];
-    if (!sheetName) {
-      return NextResponse.json(
-        { error: 'Sheet configuration not found for team' },
-        { status: 400 }
-      );
-    }
-
-    // ✅ Ensure sheet exists with headers
-    await ensureSheetExists(sheetName, teamSlug);
-
-    // ✅ USN uniqueness check across all sheets
-    const newUSN = (basicDetails.usn || '').trim().toUpperCase();
-    const isUSNDuplicate = await checkUSNAcrossAllSheets(newUSN);
-
-    if (isUSNDuplicate) {
-      return NextResponse.json(
-        { error: 'USN already registered. Please verify your details.' },
-        { status: 400 }
-      );
-    }
-
-    // ✅ Prepare row data
-    const timestamp = new Date().toISOString();
-    let rowData: any[] = [
-      timestamp,
-      basicDetails.name || '',
-      basicDetails.usn || '',
-      basicDetails.collegeEmail || '',
-      basicDetails.personalEmail || '',
-      basicDetails.phone || '',
-      basicDetails.department || '',
-      basicDetails.semester || '',
-      basicDetails.otherClubs || '',
-      basicDetails.team || '',
-    ];
-
-    // Add team-specific fields
-    switch (teamSlug) {
-      case 'technical':
-        if (technicalDetails) {
-          rowData.push(
-            technicalDetails.project || '',
-            technicalDetails.crazyFeature || '',
-            technicalDetails.incidentResponse || '',
-            technicalDetails.portfolioLink || '',
-            technicalDetails.toolsAndNext || '',
-            technicalDetails.oneWord || '',
-            technicalDetails.proofLink || '',
-            technicalDetails.goals || '',
-            technicalDetails.otherTeams || ''
-
-          );
-        }
-        break;
-      case 'event-management':
-        if (eventManagementDetails) {
-          rowData.push(
-            eventManagementDetails.why || '',
-            eventManagementDetails.meaning || '',
-            eventManagementDetails.excites || '',
-            eventManagementDetails.pressure || '',
-            eventManagementDetails.teamwork || '',
-            eventManagementDetails.experience || '',
-            eventManagementDetails.prefer || '',
-            eventManagementDetails.strategies || '',
-            eventManagementDetails.tackle || '',
-            eventManagementDetails.portfolio || '',
-            eventManagementDetails.campaign || '',
-            eventManagementDetails.otherTeams || ''
-          );
-        }
-        break;
-      case 'sponsorship':
-        if (sponsorshipDetails) {
-          rowData.push(
-            sponsorshipDetails.outreach || '',
-            sponsorshipDetails.pitch || '',
-            sponsorshipDetails.channels || '',
-            sponsorshipDetails.selection || '',
-            sponsorshipDetails.relationships || '',
-            sponsorshipDetails.proposal || '',
-            sponsorshipDetails.objections || '',
-            sponsorshipDetails.availability || '',
-            sponsorshipDetails.otherTeams || ''
-          );
-        }
-        break;
-      case 'curation':
-        if (curationDetails) {
-          rowData.push(
-            curationDetails.writingProficiency || '',
-            curationDetails.captions || '',
-            curationDetails.themes || '',
-            curationDetails.resonate || '',
-            curationDetails.philosophy || '',
-            curationDetails.why || '',
-            curationDetails.ai || '',
-            curationDetails.enhance || '',
-            curationDetails.imageDesc || '',
-            curationDetails.otherTeams || ''
-          );
-        }
-        break;
-      case 'design':
-        if (designDetails) {
-          rowData.push(
-            designDetails.proficiency || '',
-            designDetails.newTools || '',
-            designDetails.strategies || '',
-            designDetails.project || '',
-            designDetails.trends || '',
-            designDetails.inspiration || '',
-            designDetails.communication || '',
-            designDetails.links || '',
-            designDetails.otherTeams || ''
-          );
-        }
-        break;
-      case 'media':
-        if (mediaDetails) {
-          rowData.push(
-            mediaDetails.proficiency || '',
-            mediaDetails.project || '',
-            mediaDetails.inspiration || '',
-            mediaDetails.tools || '',
-            mediaDetails.strategy || '',
-            mediaDetails.links || '',
-            mediaDetails.otherTeams || ''
-          );
-        }
-        break;
-      default:
-        return NextResponse.json(
-          { error: 'Unknown team type' },
-          { status: 400 }
-        );
-    }
-
-    // ✅ Append new data
-    const range = `${sheetName}!A:Z`;
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [rowData] },
-    });
-
+  // 1. General questions
+  const rawBasic = (body.basic ?? {}) as Record<string, unknown>;
+  const basic = { ...EMPTY_BASIC } as BasicDetails;
+  for (const key of Object.keys(EMPTY_BASIC) as (keyof BasicDetails)[]) {
+    basic[key] = asText(rawBasic[key]).trim();
+  }
+  const basicErrors = validateBasic(basic);
+  if (hasErrors(basicErrors)) {
     return NextResponse.json(
-      { success: true, message: 'Application submitted successfully!' },
-      { status: 200 }
+      { error: "Some of your details are missing or wrong.", step: 1, fields: basicErrors },
+      { status: 400 }
     );
-  } catch (error) {
-    console.error('Error saving to Google Sheets:', error);
+  }
+
+  // 2. Team
+  const team = getTeam(asText(body.team));
+  if (!team) {
+    return NextResponse.json({ error: "Please choose a team.", step: 2 }, { status: 400 });
+  }
+
+  // 3. Team questions
+  const rawAnswers = (body.answers ?? {}) as Record<string, unknown>;
+  const answers: Record<string, string> = {};
+  for (const question of team.questions) {
+    answers[question.key] = asText(rawAnswers[question.key]).trim();
+  }
+  const answerErrors = validateAnswers(team, answers);
+  if (hasErrors(answerErrors)) {
     return NextResponse.json(
-      {
-        error: 'Failed to submit application',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
+      { error: "Some answers are missing or too long.", step: 3, fields: answerErrors },
+      { status: 400 }
+    );
+  }
+
+  // Build the row in the same column order as the header row.
+  const usn = basic.usn.toUpperCase();
+  const headers = [...BASIC_COLUMNS, ...team.questions.map((question) => question.column)];
+  const row = [
+    new Date().toISOString(),
+    basic.name,
+    usn,
+    basic.collegeEmail,
+    basic.personalEmail,
+    normalizePhone(basic.phone),
+    basic.department,
+    basic.semester,
+    basic.otherClubs,
+    team.name,
+    ...team.questions.map((question) => answers[question.key]),
+  ].map(safeCell);
+
+  if (!APPS_SCRIPT_URL || !APPS_SCRIPT_SECRET) {
+    // On your laptop, before the sheet is connected, print the row in the
+    // terminal so the whole form can still be tested.
+    if (process.env.NODE_ENV !== "production") {
+      console.log("\n[recruitment] Sheet not connected yet. This row would be saved:");
+      console.log(Object.fromEntries(headers.map((header, index) => [header, row[index]])));
+      return NextResponse.json({ success: true, saved: false });
+    }
+    console.error("[recruitment] APPS_SCRIPT_URL or APPS_SCRIPT_SECRET is not set.");
+    return NextResponse.json(
+      { error: "Applications can't be saved right now. Please try again later." },
       { status: 500 }
     );
   }
-}
 
-// ✅ Helper: Check USN across all sheets
-async function checkUSNAcrossAllSheets(usn: string): Promise<boolean> {
   try {
-    if (!SPREADSHEET_ID) return false;
-
-    const normalizedUSN = usn.trim().toUpperCase();
-
-    for (const teamSlug of Object.keys(SHEET_NAMES)) {
-      const sheetName = SHEET_NAMES[teamSlug];
-      const existingRows = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `${sheetName}!C2:C`, // C = USN column
-      });
-
-      const usnList = existingRows.data.values?.flat().map((v) => v.trim().toUpperCase()) || [];
-
-      if (usnList.includes(normalizedUSN)) {
-        return true;
-      }
-    }
-
-    return false;
-  } catch (error) {
-    console.error('Error checking USN across sheets:', error);
-    throw error;
-  }
-}
-
-// ✅ Helper: Ensure the sheet exists and has headers
-async function ensureSheetExists(sheetName: string, teamSlug: string) {
-  try {
-    if (!SPREADSHEET_ID) return;
-
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId: SPREADSHEET_ID,
+    const response = await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        secret: APPS_SCRIPT_SECRET,
+        sheetName: team.sheetName,
+        headers,
+        row,
+        usn,
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(25_000),
     });
 
-    const sheetExists = spreadsheet.data.sheets?.some(
-      (sheet) => sheet.properties?.title === sheetName
-    );
+    const text = await response.text();
+    let result: { ok?: boolean; error?: string };
+    try {
+      result = JSON.parse(text);
+    } catch {
+      // Apps Script answers with an HTML page when the deployment is wrong.
+      throw new Error(`Apps Script did not return JSON (status ${response.status}).`);
+    }
 
-    if (!sheetExists) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: SPREADSHEET_ID,
-        requestBody: {
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: sheetName,
-                  gridProperties: { frozenRowCount: 1 },
-                },
-              },
-            },
-          ],
+    if (result.ok) {
+      return NextResponse.json({ success: true, saved: true });
+    }
+    if (result.error === "duplicate") {
+      return NextResponse.json(
+        {
+          error: "This USN has already applied. Each person can apply once.",
+          step: 1,
+          fields: { usn: "This USN has already applied." },
         },
-      });
-
-      const headers = TEAM_HEADERS[teamSlug] || [];
-      if (headers.length > 0) {
-        const headerRange = `${sheetName}!A1:${String.fromCharCode(64 + headers.length)}1`;
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: SPREADSHEET_ID,
-          range: headerRange,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: { values: [headers] },
-        });
-
-        const sheetId = await getSheetId(sheetName);
-        if (sheetId !== null) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: SPREADSHEET_ID,
-            requestBody: {
-              requests: [
-                {
-                  repeatCell: {
-                    range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
-                    cell: {
-                      userEnteredFormat: {
-                        backgroundColor: { red: 0.9, green: 0.9, blue: 0.9 },
-                        textFormat: { bold: true },
-                      },
-                    },
-                    fields: 'userEnteredFormat(backgroundColor,textFormat)',
-                  },
-                },
-              ],
-            },
-          });
-        }
-      }
+        { status: 409 }
+      );
     }
+    throw new Error(`Apps Script refused the row: ${result.error ?? "unknown reason"}`);
   } catch (error) {
-    console.error('Error ensuring sheet exists:', error);
-    throw error;
-  }
-}
-
-// ✅ Helper: Get Sheet ID
-async function getSheetId(sheetName: string): Promise<number | null> {
-  try {
-    if (!SPREADSHEET_ID) return null;
-
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId: SPREADSHEET_ID,
-    });
-
-    const sheet = spreadsheet.data.sheets?.find(
-      (s) => s.properties?.title === sheetName
+    console.error("[recruitment] Could not save to the sheet:", error);
+    return NextResponse.json(
+      { error: "We couldn't save your application. Please try again in a minute." },
+      { status: 502 }
     );
-
-    return sheet?.properties?.sheetId ?? null;
-  } catch (error) {
-    console.error('Error getting sheet ID:', error);
-    return null;
   }
 }

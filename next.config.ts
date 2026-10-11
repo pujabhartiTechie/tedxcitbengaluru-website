@@ -13,7 +13,17 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  /* config options here */
+  // The apply form is one page now. Old links to its inner pages
+  // (/joinus/team/technical, /joinus/success, ...) go back to the start.
+  async redirects() {
+    return [
+      {
+        source: '/joinus/:path+',
+        destination: '/joinus',
+        permanent: false,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

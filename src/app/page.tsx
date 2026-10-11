@@ -44,7 +44,10 @@ export default function Home() {
         </main>
         <Footer />
       </div>
-      
+
+      {/* Floating "Join us" button that opens the apply form at /joinus */}
+      {!isLoading && <RecruitmentFAB />}
+
     </div>
   );
 }
