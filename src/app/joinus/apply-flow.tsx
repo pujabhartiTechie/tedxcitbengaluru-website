@@ -578,8 +578,8 @@ function FieldShell({
       <label htmlFor={id} className="text-sm font-semibold text-white">
         {label}
       </label>
-      {hint && <p className="-mt-1 text-xs text-gray-500">{hint}</p>}
-      {children}
+            {children}
+      {hint && <p className="text-xs text-gray-500">{hint}</p>}
       {error && (
         <p id={`${id}-error`} className="text-sm text-red-400">
           {error}
@@ -619,7 +619,7 @@ function TextField({
         onChange={(event) => onChange(event.target.value)}
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? `${id}-error` : undefined}
-        className={`form-input placeholder:text-white/30 ${error ? INVALID : ""}`}
+                className={`form-input h-14 placeholder:text-white/30 ${error ? INVALID : ""}`}
         {...rest}
       />
     </FieldShell>
