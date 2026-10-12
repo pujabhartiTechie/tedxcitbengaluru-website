@@ -163,6 +163,8 @@
 ::-webkit-scrollbar-thumb:hover { background: #B91C1C; }
 ::selection { background: var(--color-red); color: var(--color-white); }
 *:focus { outline: 2px solid var(--color-red); outline-offset: 2px; }
+/* Team rows on the apply page: no red box after a tap or click, only for keyboard users */
+.team-toggle:focus:not(:focus-visible) { outline: none; }
 * { transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease; }
 
 .lanyard-wrapper {

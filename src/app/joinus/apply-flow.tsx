@@ -844,7 +844,7 @@ function TeamRow({
         onClick={onToggle}
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full cursor-pointer items-center justify-between gap-4 px-5 py-4 text-left"
+        className="team-toggle flex w-full cursor-pointer items-center justify-between gap-4 rounded-xl px-5 py-4 text-left"
       >
         <span>
           <span className="block text-lg font-bold text-white">
@@ -869,7 +869,7 @@ function TeamRow({
       </button>
 
       {isOpen && (
-        <div id={panelId} className="flex flex-col gap-5 px-5 pb-5">
+        <div id={panelId} className="flex flex-col gap-5 px-5 pb-5 pt-3">
           {team.videoId && <LiteVideo id={team.videoId} title={`${team.name} team lead`} />}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-gray-400">
